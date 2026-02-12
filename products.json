@@ -1,0 +1,17 @@
+[
+    {
+        "name": "Cetaphil Face Wash",
+        "url": "https://www.amazon.in/dp/B01CCGW4OE",
+        "target_price": 400
+    },
+    {
+        "name": "Samsung Galaxy S23",
+        "url": "https://www.amazon.in/dp/B0BT9CXXXX",
+        "target_price": 60000
+    },
+    {
+        "name": "Sony XM5 Headphones",
+        "url": "https://www.amazon.in/dp/B09XS7XXXX",
+        "target_price": 25000
+    }
+]

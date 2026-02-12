@@ -1,114 +1,139 @@
 import requests
 from bs4 import BeautifulSoup
 import smtplib
-import time
+import os
+import json
 import random
-import datetime
-from email.mime.text import MIMEText
+import csv
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-import os  # <--- NEW: You must add this library!
-
-# --- CONFIGURATION SECTION ---
-# --- CONFIGURATION SECTION ---
-PRODUCT_URL = "https://www.amazon.in/dp/B01CCGW4OE"
-TARGET_PRICE = 500.0
-
-# SECURE: We are telling Python "Go look for these secrets in the system settings"
-# We are NOT writing the password here anymore.
+# --- CONFIGURATION ---
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 
-# Headers to make the bot look like a Human Browser
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.google.com/"
-}
+# --- FUNCTIONS ---
 
-def get_product_price():
-    """Scrapes the product price handling multiple potential HTML structures."""
-    print(f"[{datetime.datetime.now()}] Checking price...")
+def get_price(url):
+    """Scrapes price using random User-Agents to avoid bans."""
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
+    ]
+    
+    headers = {
+        "User-Agent": random.choice(user_agents),
+        "Accept-Language": "en-US,en;q=0.9"
+    }
     
     try:
-        # 1. Random delay to avoid bot detection
-        time.sleep(random.uniform(2, 5))
+        response = requests.get(url, headers=headers)
+        # Using lxml as requested for speed and stability
+        soup = BeautifulSoup(response.content, "lxml")
+
+        # Selectors for Amazon India (can be expanded)
+        price_element = soup.find(class_="a-price-whole")
         
-        # 2. Fetch the page
-        page = requests.get(PRODUCT_URL, headers=HEADERS)
-        soup = BeautifulSoup(page.content, "html.parser")
-
-        # 3. List of possible CSS selectors for Amazon Price
-        selectors = [
-            {"class_": "a-price-whole"},                     # Standard India
-            {"id": "corePriceDisplay_desktop_feature_div"},   # Desktop
-            {"class_": "a-offscreen"},                        # Hidden price
-            {"id": "priceblock_ourprice"},                   # Old style
-            {"id": "priceblock_dealprice"}                   # Deal style
-        ]
-
-        # 4. Try to find the price using each selector
-        for selector in selectors:
-            price_tag = soup.find(name="span", **selector)
-            if price_tag:
-                raw_price = price_tag.get_text().strip()
-                # Clean the text: Remove '₹', ',', and empty spaces
-                clean_price = raw_price.replace("₹", "").replace(",", "").replace("$", "")
-                
-                # Extract the first valid number (handle "400.00" or "400")
-                try:
-                    final_price = float(clean_price.split("\n")[0])
-                    print(f" -> Found Price: ₹{final_price}")
-                    return final_price
-                except ValueError:
-                    continue # If text isn't a number, try next selector
-
-        # 5. Debugging: If no price found, save HTML to check for Captcha
-        print(" -> Error: Price not found. Saving debug HTML...")
-        with open("debug_error.html", "w", encoding="utf-8") as f:
-            f.write(str(soup))
-        return None
-
+        if price_element:
+            # Clean up text: "1,299." -> "1299"
+            price_text = price_element.get_text().replace(",", "").replace(".", "").strip()
+            return float(price_text)
+        else:
+            return None
+            
     except Exception as e:
-        print(f" -> Critical Error: {e}")
+        print(f"❌ Scraping Error: {e}")
         return None
 
-def send_email_alert(price):
-    """Sends an email notification using SMTP (UTF-8 safe)."""
-    
-    msg = MIMEMultipart()
+def send_email(product_name, price, url):
+    """Sends a professional HTML email alert."""
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        print("⚠️ Email credentials missing. Skipping email.")
+        return
+
+    msg = MIMEMultipart("alternative")
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
-    msg['Subject'] = "🚨 Price Drop Alert!"  # The emoji will work now!
+    msg['Subject'] = f"🚨 Price Drop: {product_name} is ₹{price}!"
 
-    body = f"The price has dropped to ₹{price}!\n\nBuy it here: {PRODUCT_URL}"
-    msg.attach(MIMEText(body, 'plain', 'utf-8'))
+    # Professional HTML Template
+    html_content = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif;">
+        <h2 style="color: #d32f2f;">📉 Price Drop Alert!</h2>
+        <p>The price for <strong>{product_name}</strong> has dropped to <strong>₹{price}</strong>.</p>
+        <p>This is below your target price.</p>
+        <br>
+        <a href="{url}" style="background-color: #ff9900; color: black; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+          View on Amazon
+        </a>
+      </body>
+    </html>
+    """
+    msg.attach(MIMEText(html_content, 'html'))
 
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            # We send the 'msg' object instead of a simple string
-            server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
-        print(" -> Email Alert Sent Successfully!")
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+        server.quit()
+        print(f"✅ Email Alert Sent for {product_name}!")
     except Exception as e:
-        print(f" -> Failed to send email: {e}")
+        print(f"❌ Email Failed: {e}")
 
-# --- MAIN EXECUTION LOOP ---
+def save_history(name, price):
+    """Saves price data to CSV for future analysis."""
+    filename = "price_history.csv"
+    file_exists = os.path.isfile(filename)
+    
+    with open(filename, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["Date", "Time", "Product", "Price"]) # Header
+        
+        now = datetime.now()
+        writer.writerow([now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), name, price])
+    print(f"   💾 Data logged to {filename}")
+
+# --- MAIN EXECUTION ---
+
 if __name__ == "__main__":
-    print("--- Amazon Price Tracker Started ---")
-    print(f"Tracking URL: {PRODUCT_URL}")
-    print(f"Target Price: ₹{TARGET_PRICE}")
+    print("--- 🛒 Amazon Tracker Started ---")
     
-    # Run once immediately
-    current_price = get_product_price()
-    
-    if current_price:
-        if current_price <= TARGET_PRICE:
-            print(" -> Price is LOW! Sending alert...")
-            send_email_alert(current_price)
+    # Robust Path Finding for products.json
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    json_path = os.path.join(script_dir, 'products.json')
+
+    try:
+        with open(json_path, 'r') as file:
+            products = json.load(file)
+            print(f"📋 Loaded {len(products)} products.")
+    except FileNotFoundError:
+        print("❌ Error: products.json not found! Please create it.")
+        products = []
+
+    for item in products:
+        name = item['name']
+        url = item['url']
+        target = item['target_price']
+        
+        print(f"\n🔍 Checking: {name}...")
+        current_price = get_price(url)
+        
+        if current_price:
+            print(f"   💰 Current: ₹{current_price} | Target: ₹{target}")
+            save_history(name, current_price)
+            
+            if current_price <= target:
+                print("   📉 TARGET MET! Sending alert...")
+                send_email(name, current_price, url)
+            else:
+                print("   Wait: Price is still above target.")
         else:
-            print(f" -> Price is still high (₹{current_price}). No email sent.")
-    else:
-        print(" -> Failed to retrieve price.")
+            print("   ⚠️ Could not retrieve price.")
+
+    print("\n--- 🏁 Finished ---")
