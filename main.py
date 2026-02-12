@@ -17,35 +17,71 @@ RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 # --- FUNCTIONS ---
 
 def get_price(url):
-    """Scrapes price using random User-Agents to avoid bans."""
+    """Scrapes price with advanced headers to bypass basic bot detection."""
+    
+    # List of "Browser Fingerprints"
     user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
     ]
     
+    # "Stealth" Headers - These make the bot look like a real user browsing
     headers = {
         "User-Agent": random.choice(user_agents),
-        "Accept-Language": "en-US,en;q=0.9"
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Referer": "https://www.google.com/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
     }
     
     try:
-        response = requests.get(url, headers=headers)
-        # Using lxml as requested for speed and stability
+        response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.content, "lxml")
 
-        # Selectors for Amazon India (can be expanded)
-        price_element = soup.find(class_="a-price-whole")
+        # DEBUG: Print the page title to see if we are blocked
+        page_title = soup.title.text.strip() if soup.title else "No Title"
+        # print(f"   📄 Page Title: {page_title[:30]}...") 
+
+        if "Robot Check" in page_title or "Captcha" in page_title:
+            print("   ⚠️ Amazon blocked this request (CAPTCHA Detected).")
+            return None
+
+        # METHOD 1: Standard 'a-price-whole' (Visible Price)
+        price_element = soup.find("span", class_="a-price-whole")
         
+        # METHOD 2: 'a-offscreen' (Hidden Price, often more reliable)
+        if not price_element:
+            price_element = soup.find("span", class_="a-offscreen")
+
+        # METHOD 3: Old style IDs (Backwards compatibility)
+        if not price_element:
+            price_element = soup.find(id="priceblock_ourprice")
+            
+        if not price_element:
+            price_element = soup.find(id="priceblock_dealprice")
+
+        # PROCESS THE PRICE
         if price_element:
-            # Clean up text: "1,299." -> "1299"
-            price_text = price_element.get_text().replace(",", "").replace(".", "").strip()
-            return float(price_text)
+            price_text = price_element.get_text().strip()
+            # Remove currency symbols and commas (e.g. "₹1,299.00" -> "1299.00")
+            clean_price = price_text.replace("₹", "").replace(",", "").replace("€", "").replace("$", "")
+            
+            # Handle cases where price might handle text
+            try:
+                final_price = float(clean_price)
+                return final_price
+            except ValueError:
+                # print(f"   ⚠️ Could not convert '{clean_price}' to number.")
+                return None
         else:
+            # print("   ⚠️ Selector failed. Page layout might be different.")
             return None
             
     except Exception as e:
-        print(f"❌ Scraping Error: {e}")
+        print(f"   ❌ Network/Scrape Error: {e}")
         return None
 
 def send_email(product_name, price, url):
@@ -57,7 +93,7 @@ def send_email(product_name, price, url):
     msg = MIMEMultipart("alternative")
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
-    msg['Subject'] = f"🚨 Price Drop: {product_name} is ₹{price}!"
+    msg['Subject'] = f"📉 Price Drop: {product_name} is ₹{price}!"
 
     # Professional HTML Template
     html_content = f"""
@@ -86,25 +122,24 @@ def send_email(product_name, price, url):
         print(f"❌ Email Failed: {e}")
 
 def save_history(name, price):
-    """Saves price data to CSV for future analysis."""
+    """Saves price data to CSV."""
     filename = "price_history.csv"
     file_exists = os.path.isfile(filename)
     
     with open(filename, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["Date", "Time", "Product", "Price"]) # Header
+            writer.writerow(["Date", "Time", "Product", "Price"])
         
         now = datetime.now()
         writer.writerow([now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), name, price])
-    print(f"   💾 Data logged to {filename}")
 
 # --- MAIN EXECUTION ---
 
 if __name__ == "__main__":
     print("--- 🛒 Amazon Tracker Started ---")
     
-    # Robust Path Finding for products.json
+    # Robust Path Finding
     script_dir = os.path.dirname(os.path.abspath(__file__))
     json_path = os.path.join(script_dir, 'products.json')
 
@@ -134,6 +169,6 @@ if __name__ == "__main__":
             else:
                 print("   Wait: Price is still above target.")
         else:
-            print("   ⚠️ Could not retrieve price.")
+            print("   ⚠️ Could not retrieve price (Blocked or changed layout).")
 
     print("\n--- 🏁 Finished ---")
